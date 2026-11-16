@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>URL Rotation Scheduler</title>
+<style>
+:root{--ink:#1d2433;--paper:#f4f5f7;--card:#fff;--line:#d9dde5;--acc:#0a7d6b;--bad:#b3261e}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.5 system-ui,Segoe UI,Roboto,sans-serif}
+main{max-width:760px;margin:0 auto;padding:20px 16px 60px}
+h1{font-size:22px;margin:8px 0 4px}h2{font-size:16px;margin:0 0 10px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin:14px 0}
+label{display:block;font-weight:600;margin:10px 0 4px}
+input,select,textarea,button{font:inherit;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink)}
+textarea{width:100%;min-height:130px;font-family:ui-monospace,Menlo,monospace;font-size:13px}
+select,input[type=password],input[type=number]{width:100%}
+button{cursor:pointer;font-weight:600}button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
+button.go{background:var(--acc);color:#fff;border-color:var(--acc)}button.stop{color:var(--bad);border-color:var(--bad)}
+button:disabled{opacity:.45;cursor:not-allowed}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.row>*{flex:0 0 auto}.grow{flex:1 1 200px!important}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-top:12px}
+.stats div{background:var(--paper);border-radius:8px;padding:10px}.stats b{display:block;font-size:20px;font-variant-numeric:tabular-nums}
+#cur{word-break:break-all;font-family:ui-monospace,Menlo,monospace;font-size:13px}
+#log{max-height:240px;overflow:auto;font:12px/1.6 ui-monospace,Menlo,monospace}
+#log .e{color:var(--bad)}.muted{color:#5d6678;font-size:13px}.hide{display:none}
+</style></head><body><main>
+
+<section id="login" class="card" style="max-width:380px;margin:60px auto">
+  <h1>URL Rotation Scheduler</h1>
+  <p class="muted">Password daalo aur dashboard kholo.</p>
+  <input id="pw" type="password" placeholder="Password" autocomplete="current-password">
+  <p id="lerr" class="muted" style="color:var(--bad)"></p>
+  <button id="unlock" class="go" style="width:100%">Open dashboard</button>
+</section>
+
+<div id="app" class="hide">
+  <div class="row"><h1 class="grow">URL Rotation Scheduler</h1><button id="out">Sign out</button></div>
+  <p class="muted">Sirf offer page URL badalta hai. Har update ke baad baaki saari settings dobara check hoti hain, kuch badli to rotation ruk jata hai.</p>
+
+  <section class="card"><h2>Setup</h2>
+    <label for="stream">Stream</label>
+    <div class="row"><select id="stream" class="grow"><option value="">Load streams first</option></select><button id="refresh">Refresh</button></div>
+    <label for="urls">URLs (one per line)</label>
+    <textarea id="urls" placeholder="https://example.com/offer-1&#10;https://example.com/offer-2"></textarea>
+    <p id="parsed" class="muted"></p>
+    <div class="row">
+      <div class="grow"><label for="int" style="margin-top:0">Interval (minutes, 1 to 55)</label><input id="int" type="number" min="1" max="55" value="5"></div>
+      <div class="grow"><label for="end" style="margin-top:0">When the list ends</label>
+        <select id="end"><option value="stop">Stop after last URL</option><option value="loop">Loop back to first URL</option><option value="rev">Reverse direction and continue</option></select></div>
+    </div>
+    <div class="row" style="margin-top:10px"><label style="margin:0;font-weight:400"><input id="beep" type="checkbox" checked> Beep when URL changes</label><button id="save">Save setup</button></div>
+  </section>
+
+  <section class="card"><h2>Run</h2>
+    <div class="row">
+      <button id="start" class="go">Start</button><button id="pause" disabled>Pause</button><button id="resume" disabled>Resume</button>
+      <button id="stopb" class="stop" disabled>Stop</button><button id="skip" disabled>Skip to next now</button>
+    </div>
+    <p class="muted" style="margin-bottom:2px">Current URL</p><div id="cur">Not started</div>
+    <div class="row" style="margin-top:8px"><button id="copy">Copy URL</button><span id="state" class="muted">Idle</span></div>
+    <div class="stats"><div>Next URL in<b id="cd">--:--</b></div><div>Total elapsed<b id="el">00:00:00</b></div><div>Used<b id="used">0</b></div><div>Remaining<b id="rem">0</b></div></div>
+    <p class="muted">Ye tab khula rehna chahiye, tab band hone par rotation ruk jata hai.</p>
+  </section>
+
+  <section class="card"><div class="row"><h2 class="grow">Log (newest first)</h2><button id="clr">Clear</button></div><div id="log"></div></section>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+let pw=sessionStorage.getItem('pw')||'';
+let urls=[],i=-1,dir=1,state='idle',nextAt=0,left=0,elapsed=0,last=0,tm=null,used=0,busy=false;
+
+function log(m,err){const d=document.createElement('div');if(err)d.className='e';d.textContent=new Date().toLocaleTimeString()+'  '+m;$('log').prepend(d);}
+async function api(path,opt={}){
+  const r=await fetch(path,{...opt,headers:{'Content-Type':'application/json','x-app-password':pw}});
+  const j=await r.json().catch(()=>({error:'Bad response'}));
+  if(!r.ok)throw new Error(j.error||('Error '+r.status));return j;}
+
+async function loadStreams(){
+  try{const j=await api('/api/flows');const s=$('stream');const keep=localStorage.getItem('stream');
+    s.innerHTML=j.flows.map(f=>`<option value="${f.id}">${f.name} (#${f.id})</option>`).join('')||'<option value="">No streams found</option>';
+    if(keep)s.value=keep;log('Loaded '+j.flows.length+' streams');}
+  catch(e){log(e.message,1);}
+}
+async function unlock(){
+  pw=$('pw').value||pw;$('lerr').textContent='';
+  try{await api('/api/flows');sessionStorage.setItem('pw',pw);$('login').classList.add('hide');$('app').classList.remove('hide');restore();loadStreams();}
+  catch(e){$('lerr').textContent=e.message==='Wrong password'?'Incorrect password. Try again.':e.message;}
+}
+$('unlock').onclick=unlock;$('pw').onkeydown=e=>{if(e.key==='Enter')unlock()};
+$('out').onclick=()=>{sessionStorage.removeItem('pw');location.reload()};
+$('refresh').onclick=loadStreams;
+
+function parse(){
+  const all=[...new Set($('urls').value.split('\n').map(s=>s.trim()).filter(Boolean))];
+  const bad=all.filter(u=>!/^https?:\/\/\S+$/i.test(u));urls=all.filter(u=>!bad.includes(u));
+  $('parsed').textContent=urls.length+' valid URLs'+(bad.length?', '+bad.length+' invalid skipped: '+bad.join(', '):'');
+  $('rem').textContent=Math.max(urls.length-used,0);return bad;}
+$('urls').oninput=parse;
+function save(){localStorage.setItem('setup',JSON.stringify({u:$('urls').value,i:$('int').value,e:$('end').value,b:$('beep').checked}));localStorage.setItem('stream',$('stream').value);log('Setup saved');}
+function restore(){try{const s=JSON.parse(localStorage.getItem('setup')||'{}');if(s.u)$('urls').value=s.u;if(s.i)$('int').value=s.i;if(s.e)$('end').value=s.e;if(s.b===false)$('beep').checked=false;}catch{}parse();}
+$('save').onclick=save;$('clr').onclick=()=>$('log').innerHTML='';
+
+const fmt=s=>{s=Math.max(0,Math.floor(s));const h=String(Math.floor(s/3600)).padStart(2,'0'),m=String(Math.floor(s%3600/60)).padStart(2,'0');return(h==='00'?'':h+':')+m+':'+String(s%60).padStart(2,'0');};
+function ui(){
+  const run=state==='run',pa=state==='pause';
+  $('start').disabled=run||pa;$('pause').disabled=!run;$('resume').disabled=!pa;$('stopb').disabled=!(run||pa);$('skip').disabled=!run;
+  $('state').textContent={idle:'Idle',run:'Running',pause:'Paused'}[state];
+  $('cur').textContent=i>=0?urls[i]:'Not started';$('used').textContent=used;$('rem').textContent=Math.max(urls.length-used,0);}
+function beep(){if(!$('beep').checked)return;try{const c=new AudioContext(),o=c.createOscillator();o.connect(c.destination);o.frequency.value=880;o.start();o.stop(c.currentTime+.15);}catch{}}
+
+async function apply(j){
+  busy=true;
+  try{const r=await api('/api/rotate',{method:'POST',body:JSON.stringify({flow_id:$('stream').value,url:urls[j]})});
+    i=j;used++;log('Offer URL set to '+urls[j]);beep();
+    if(r.drift&&r.drift.length){log('STOPPED: these settings changed: '+r.drift.join(', '),1);stop();return false;}
+    return true;
+  }catch(e){log('Update failed: '+e.message,1);stop();return false;}
+  finally{busy=false;ui();}
+}
+async function advance(){
+  const n=urls.length,m=$('end').value;let j=i+dir;
+  if(j>=n){if(m==='stop'){log('List finished');stop();return;}
+    if(m==='loop')j=0;else{dir=-1;j=Math.max(n-2,0);}}
+  else if(j<0){dir=1;j=Math.min(1,n-1);}
+  if(await apply(j)&&state==='run')nextAt=Date.now()+$('int').value*60000;
+}
+function loop(){
+  const now=Date.now();
+  if(state==='run'){elapsed+=now-last;if(!busy&&now>=nextAt)advance();$('cd').textContent=fmt((nextAt-now)/1000);}
+  last=now;$('el').textContent=(h=>h)(fmt(elapsed/1000).split(':').length===2?'00:'+fmt(elapsed/1000):fmt(elapsed/1000));}
+function stop(){state='idle';clearInterval(tm);$('cd').textContent='--:--';ui();}
+
+$('start').onclick=async()=>{
+  const bad=parse();if(bad.length&&!confirm('Invalid URLs will be skipped. Continue?'))return;
+  if(!$('stream').value)return log('Select a stream first',1);if(!urls.length)return log('Add at least one URL',1);
+  const mins=+$('int').value;if(!(mins>=1&&mins<=55))return log('Interval must be 1 to 55 minutes',1);
+  used=0;dir=1;elapsed=0;last=Date.now();state='run';save();ui();
+  if(await apply(0)&&state==='run'){nextAt=Date.now()+mins*60000;last=Date.now();clearInterval(tm);tm=setInterval(loop,500);}
+};
+$('pause').onclick=()=>{left=nextAt-Date.now();state='pause';ui();};
+$('resume').onclick=()=>{nextAt=Date.now()+left;last=Date.now();state='run';ui();};
+$('stopb').onclick=()=>{stop();log('Stopped');};
+$('skip').onclick=()=>{if(!busy)advance();};
+$('copy').onclick=()=>{if(i>=0)navigator.clipboard.writeText(urls[i]).then(()=>log('URL copied'));};
+
+if(pw){$('pw').value=pw;unlock();}
+</script></main></body></html>
