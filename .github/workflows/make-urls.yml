@@ -1,5 +1,5 @@
-# Makes new Laravel Forge URLs, deploys the stream's page to each, adds them to the rotator queue.
-# Run it: GitHub -> Actions tab -> "Make URLs" -> "Run workflow".
+# Manually make new Forge URLs for a stream and add them to its queue.
+# GitHub -> Actions tab -> "Make URLs" -> "Run workflow".
 name: Make URLs
 
 on:
@@ -16,10 +16,13 @@ on:
         description: "Page repo (leave empty to use streams.json)"
         required: false
 
+concurrency:
+  group: forge-robot
+
 jobs:
   make:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -35,4 +38,4 @@ jobs:
           REPO_OVERRIDE: ${{ inputs.page_repo }}
           ROTATOR_URL: ${{ secrets.ROTATOR_URL }}
           ROTATOR_KEY: ${{ secrets.ROTATOR_KEY }}
-        run: node scripts/make-urls.mjs
+        run: node scripts/make-urls.mjs make
