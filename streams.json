@@ -3,7 +3,9 @@
     "repo": "git@github.com:h18966341-beep/forge-pages.git",
     "branch": "main",
     "auto": false,
+    "lead_min": 60,
     "min_left": 5,
-    "batch": 10
+    "batch": 20,
+    "target_min": 180
   }
 }
