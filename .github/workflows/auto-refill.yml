@@ -1,0 +1,29 @@
+# Every 5 minutes: if a stream's queue is running low, make new URLs and add them. Never runs out.
+# Settings per stream are in streams.json (min_left, batch, auto).
+name: Auto refill
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: forge-robot
+
+jobs:
+  refill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Refill low queues
+        env:
+          FORGE_TOKEN: ${{ secrets.FORGE_TOKEN }}
+          FORGE_ORG: hansi-tlg
+          FORGE_SERVER: "1293375"
+          ROTATOR_URL: ${{ secrets.ROTATOR_URL }}
+          ROTATOR_KEY: ${{ secrets.ROTATOR_KEY }}
+        run: node scripts/make-urls.mjs refill
