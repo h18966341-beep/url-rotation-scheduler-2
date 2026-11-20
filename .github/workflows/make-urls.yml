@@ -1,0 +1,38 @@
+# Makes new Laravel Forge URLs, deploys the stream's page to each, adds them to the rotator queue.
+# Run it: GitHub -> Actions tab -> "Make URLs" -> "Run workflow".
+name: Make URLs
+
+on:
+  workflow_dispatch:
+    inputs:
+      flow_id:
+        description: "Stream number (example: 162512)"
+        required: true
+      count:
+        description: "How many new URLs to make (1-50)"
+        required: true
+        default: "1"
+      page_repo:
+        description: "Page repo (leave empty to use streams.json)"
+        required: false
+
+jobs:
+  make:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Make the URLs
+        env:
+          FORGE_TOKEN: ${{ secrets.FORGE_TOKEN }}
+          FORGE_ORG: hansi-tlg
+          FORGE_SERVER: "1293375"
+          FLOW_ID: ${{ inputs.flow_id }}
+          COUNT: ${{ inputs.count }}
+          REPO_OVERRIDE: ${{ inputs.page_repo }}
+          ROTATOR_URL: ${{ secrets.ROTATOR_URL }}
+          ROTATOR_KEY: ${{ secrets.ROTATOR_KEY }}
+        run: node scripts/make-urls.mjs
