@@ -103,7 +103,7 @@ async function makeOne(repo, branch, label) {
   }
 }
 
-// makes `count` URLs (4 at a time) and puts each into the queue the moment it is ready
+// makes `count` URLs (5 at a time) and puts each into the queue the moment it is ready
 async function makeMany(flowId, count) {
   const cfg = streams[flowId] || {};
   const repo = E.REPO_OVERRIDE || cfg.repo, branch = E.BRANCH_OVERRIDE || cfg.branch || 'main';
@@ -124,7 +124,7 @@ async function makeMany(flowId, count) {
       } catch (e) { failed++; console.error(`[${flowId} #${i}] FAILED: ${e.message}`); }
     }
   }
-  await Promise.all([worker(), worker(), worker(), worker()]);
+  await Promise.all([worker(), worker(), worker(), worker(), worker()]);
   console.log(`Stream ${flowId}: ${made} URL(s) added, ${failed} failed`);
   return failed === 0;
 }
@@ -146,9 +146,15 @@ async function main() {
       if (s.end_mode === 'rev') { console.log(`Stream ${flowId}: Reverse mode is not supported by auto-refill, skipping`); continue; }
       const n = s.urls.length, idx = Number(s.idx);
       const ahead = idx < 0 ? n : n - 1 - idx;
-      const minLeft = Number(cfg.min_left ?? 5), batch = Number(cfg.batch ?? 10);
-      console.log(`Stream ${flowId}: ${ahead} URL(s) left in the queue (refill at ${minLeft} or less)`);
-      if (ahead > minLeft) continue;
+      const interval = Number(s.interval_min) || 5;
+      const timeLeft = ahead * interval;                       // minutes until the queue runs out
+      const leadMin = Number(cfg.lead_min ?? 60);              // refill when this many minutes (or fewer) are left
+      const minLeft = Number(cfg.min_left ?? 5);               // ...or when this many URLs (or fewer) are left
+      const targetMin = Number(cfg.target_min ?? 180);         // after refill the queue should last at least this long
+      const batch = Math.min(60, Math.max(Number(cfg.batch ?? 20), Math.ceil(targetMin / interval) - ahead));
+      console.log(`Stream ${flowId}: ${ahead} URL(s) left = about ${timeLeft} min (refill at ${leadMin} min or ${minLeft} URLs)`);
+      if (ahead > minLeft && timeLeft > leadMin) continue;
+      console.log(`Stream ${flowId}: queue is getting low, making ${batch} URL(s)`);
       allOk = (await makeMany(flowId, batch)) && allOk;
     }
     return allOk;
@@ -161,6 +167,15 @@ async function main() {
     console.log(`Removed ${r.removed.length} URL(s) from the queue, ${r.kept} left`);
     const hosts = new Set(r.removed.map(host).filter(h => h.endsWith('.on-forge.com')));
     if (!hosts.size) { console.log('Nothing to delete on Forge'); return true; }
+    const delay = Number(E.DELAY_MIN ?? 30);
+    if (delay > 0) {
+      console.log(`Removed from the queue. Waiting ${delay} minute(s) so visitors who already opened these pages are not cut off...`);
+      await sleep(delay * 60000);
+      // safety: never delete a site that is back in some queue
+      const { schedules } = await rot('GET', '/api/queue');
+      const queued = new Set(schedules.flatMap(x => x.urls).map(host));
+      for (const h of [...hosts]) if (queued.has(h)) { hosts.delete(h); console.log('Skipping (back in a queue):', h); }
+    }
     const sites = await listSites();
     let del = 0, miss = 0;
     for (const h of hosts) {
