@@ -1,0 +1,47 @@
+# Bulk delete: removes URLs from a stream's queue and deletes their Forge sites.
+# GitHub -> Actions tab -> "Delete URLs" -> "Run workflow".
+# The URL that is live right now is never deleted.
+name: Delete URLs
+
+on:
+  workflow_dispatch:
+    inputs:
+      flow_id:
+        description: "Stream number (example: 162512)"
+        required: true
+      mode:
+        description: "used = already shown | all = everything except the live one | list = only the URLs pasted below"
+        required: true
+        type: choice
+        default: used
+        options:
+          - used
+          - all
+          - list
+      urls:
+        description: "Only for mode=list: URLs separated by spaces"
+        required: false
+
+concurrency:
+  group: forge-robot
+
+jobs:
+  delete:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Delete
+        env:
+          FORGE_TOKEN: ${{ secrets.FORGE_TOKEN }}
+          FORGE_ORG: hansi-tlg
+          FORGE_SERVER: "1293375"
+          FLOW_ID: ${{ inputs.flow_id }}
+          DELETE_MODE: ${{ inputs.mode }}
+          URLS: ${{ inputs.urls }}
+          ROTATOR_URL: ${{ secrets.ROTATOR_URL }}
+          ROTATOR_KEY: ${{ secrets.ROTATOR_KEY }}
+        run: node scripts/make-urls.mjs delete
