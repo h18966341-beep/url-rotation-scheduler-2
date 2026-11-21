@@ -61,7 +61,7 @@ const rand = () => 'p' + randomBytes(16).toString('hex').slice(0, 30);
 
 async function waitSite(id, ok, what, tries = 60) {
   for (let i = 0; i < tries; i++) {
-    const s = (await forge('GET', `/sites/${id}`)).data.attributes;
+    const s = (await forge('GET', `${API}/orgs/${E.FORGE_ORG}/sites/${id}`)).data.attributes;
     if (s.status === 'failed') throw new Error(`site ${id} failed while ${what}`);
     if (ok(s)) return s;
     await sleep(5000);
