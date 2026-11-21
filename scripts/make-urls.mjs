@@ -104,8 +104,8 @@ async function makeOne(repo, branch, label) {
 }
 
 // makes `count` URLs (5 at a time) and puts each into the queue the moment it is ready
-async function makeMany(flowId, count) {
-  const cfg = streams[flowId] || {};
+async function makeMany(flowId, count, cfgIn) {
+  const cfg = cfgIn || streams[flowId] || {};
   const repo = E.REPO_OVERRIDE || cfg.repo, branch = E.BRANCH_OVERRIDE || cfg.branch || 'main';
   if (!repo) throw new Error(`No page repo for stream ${flowId}. Add it to streams.json.`);
   const sites = await listSites();
@@ -136,26 +136,61 @@ async function main() {
     return makeMany(E.FLOW_ID, n);
   }
   if (MODE === 'refill') {
-    const { schedules } = await rot('GET', '/api/queue');
+    // 1) auto-clean used URLs for streams that have it switched on (they are booked for deletion later)
+    await rot('POST', '/api/robot', { action: 'sweep' }).catch(e => console.log('Auto-clean skipped:', e.message));
+    const { schedules, settings, due } = await rot('GET', '/api/robot');
     let allOk = true;
-    for (const [flowId, cfg] of Object.entries(streams)) {
-      if (cfg.auto === false) { console.log(`Stream ${flowId}: auto-refill is off`); continue; }
+    // 2) make URLs where needed.  Settings from the dashboard panel win over streams.json
+    const ids = [...new Set([...Object.keys(streams), ...settings.map(x => String(x.flow_id))])];
+    for (const flowId of ids) {
+      const row = settings.find(x => String(x.flow_id) === flowId);
+      const cfg = { ...(streams[flowId] || {}), ...(row || {}) };
+      const auto = row ? row.auto === true : cfg.auto !== false;
       const s = schedules.find(x => String(x.flow_id) === flowId);
       if (!s) { console.log(`Stream ${flowId}: no schedule yet, skipping`); continue; }
+      const asked = Number(row && row.make_now) || 0;
+      if (asked > 0) {            // "Make URLs now" pressed in the panel
+        console.log(`Stream ${flowId}: ${asked} URL(s) requested from the panel`);
+        const ok = await makeMany(flowId, asked, cfg);
+        await rot('POST', '/api/robot', { action: 'made', flow_id: Number(flowId), expect: asked, note: ok ? `Made ${asked} URL(s) on request` : 'Some URLs failed, see the GitHub Actions log' }).catch(() => {});
+        allOk = ok && allOk;
+        continue;
+      }
+      if (!auto) { console.log(`Stream ${flowId}: auto-create is off`); continue; }
       if (!s.enabled) { console.log(`Stream ${flowId}: rotation is stopped, skipping`); continue; }
-      if (s.end_mode === 'rev') { console.log(`Stream ${flowId}: Reverse mode is not supported by auto-refill, skipping`); continue; }
+      if (s.end_mode === 'rev') { console.log(`Stream ${flowId}: Reverse mode is not supported by auto-create, skipping`); continue; }
       const n = s.urls.length, idx = Number(s.idx);
       const ahead = idx < 0 ? n : n - 1 - idx;
       const interval = Number(s.interval_min) || 5;
       const timeLeft = ahead * interval;                       // minutes until the queue runs out
-      const leadMin = Number(cfg.lead_min ?? 60);              // refill when this many minutes (or fewer) are left
+      const leadMin = Number(cfg.lead_min ?? 60);              // make more when this many minutes (or fewer) are left
       const minLeft = Number(cfg.min_left ?? 5);               // ...or when this many URLs (or fewer) are left
       const targetMin = Number(cfg.target_min ?? 180);         // after refill the queue should last at least this long
       const batch = Math.min(60, Math.max(Number(cfg.batch ?? 20), Math.ceil(targetMin / interval) - ahead));
       console.log(`Stream ${flowId}: ${ahead} URL(s) left = about ${timeLeft} min (refill at ${leadMin} min or ${minLeft} URLs)`);
       if (ahead > minLeft && timeLeft > leadMin) continue;
       console.log(`Stream ${flowId}: queue is getting low, making ${batch} URL(s)`);
-      allOk = (await makeMany(flowId, batch)) && allOk;
+      const ok = await makeMany(flowId, batch, cfg);
+      await rot('POST', '/api/robot', { action: 'made', flow_id: Number(flowId), note: ok ? `Made ${batch} URL(s) automatically` : 'Auto-create had failures, see the GitHub Actions log' }).catch(() => {});
+      allOk = ok && allOk;
+    }
+    // 3) delete Forge sites whose waiting time is over
+    if (due.length) {
+      const queued = new Set(schedules.flatMap(x => x.urls).map(host));
+      const sites = await listSites();
+      const done = [];
+      for (const t of due) {
+        const h = host(t.url);
+        if (queued.has(h)) { console.log('Not deleting (back in a queue):', h); done.push(t.id); continue; }
+        const site = sites.find(x => x.host === h);
+        try {
+          if (site) { await forge('DELETE', `/sites/${site.id}`); console.log('Deleted site', h); }
+          else console.log('No Forge site found for', h);
+          done.push(t.id);
+        } catch (e) { console.error('Could not delete', h, e.message); allOk = false; }
+      }
+      if (done.length) await rot('POST', '/api/robot', { action: 'trash_done', ids: done });
+      await rot('POST', '/api/robot', { action: 'log', message: `Deleted ${done.length} used Forge site(s)` }).catch(() => {});
     }
     return allOk;
   }
