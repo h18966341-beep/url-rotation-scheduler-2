@@ -2,7 +2,7 @@
 //  make   : make COUNT new URLs for FLOW_ID and add them to the rotator queue
 //  refill : for every stream in streams.json, if few URLs are left in its queue, make more
 //  delete : remove URLs from a stream's queue and delete their Forge sites
-import { randomBytes } from 'node:crypto';
+import { randomInt } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
 const E = process.env;
@@ -13,7 +13,6 @@ for (const k of ['FORGE_TOKEN', 'FORGE_ORG', 'FORGE_SERVER', 'ROTATOR_URL', 'ROT
 const API = 'https://forge.laravel.com/api';
 const base = `${API}/orgs/${E.FORGE_ORG}/servers/${E.FORGE_SERVER}`;
 const ROT = E.ROTATOR_URL.replace(/\/$/, '');
-const MAX_SITES = Number(E.MAX_SITES || 300);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const streams = JSON.parse(readFileSync('streams.json', 'utf8'));
 
@@ -57,7 +56,18 @@ async function listSites() {
   return all;
 }
 
-const rand = () => 'p' + randomBytes(16).toString('hex').slice(0, 30);
+// unique random site name: starts with a letter, then letters/digits. A domain label may be 63 characters at most.
+const ABC = 'abcdefghijklmnopqrstuvwxyz', ALNUM = ABC + '0123456789';
+const taken = new Set();            // names that exist on Forge or were made in this run
+function rand(len) {
+  const n = Math.min(63, Math.max(10, Math.round(Number(len) || 40)));
+  for (let t = 0; t < 50; t++) {
+    let name = ABC[randomInt(ABC.length)];
+    while (name.length < n) name += ALNUM[randomInt(ALNUM.length)];
+    if (!taken.has(name)) { taken.add(name); return name; }
+  }
+  throw new Error('Could not find a unique name');
+}
 
 async function waitSite(id, ok, what, tries = 60) {
   for (let i = 0; i < tries; i++) {
@@ -77,8 +87,8 @@ async function pageOpens(url) {
   return false;
 }
 
-async function makeOne(repo, branch, label) {
-  const name = rand();
+async function makeOne(repo, branch, label, len) {
+  const name = rand(len);
   console.log(`[${label}] creating ${name}`);
   const created = await forge('POST', '/sites', {
     type: 'static-html', name, domain_mode: 'on-forge',
@@ -110,14 +120,17 @@ async function makeMany(flowId, count, cfgIn) {
   if (!repo) throw new Error(`No page repo for stream ${flowId}. Add it to streams.json.`);
   const sites = await listSites();
   const have = sites.filter(s => s.host.endsWith('.on-forge.com')).length;
-  if (have + count > MAX_SITES) throw new Error(`Safety limit: ${have} sites exist, limit is ${MAX_SITES}. Delete old ones first.`);
+  const maxSites = Number(cfg.max_sites || E.MAX_SITES || 300);
+  for (const x of sites) taken.add(x.host.split('.')[0]);
+  if (have + count > maxSites) throw new Error(`Safety limit: ${have} sites exist, limit is ${maxSites}. Delete old ones first or raise the limit in the panel.`);
+  const len = Number(cfg.url_length || 40);
   console.log(`Stream ${flowId}: making ${count} URL(s) from ${repo} (${branch}); ${have} on-forge sites exist now`);
   let made = 0, failed = 0, nextI = 0;
   async function worker() {
     while (nextI < count && failed < 3) {
       const i = ++nextI;
       try {
-        const url = await makeOne(repo, branch, `${flowId} #${i}`);
+        const url = await makeOne(repo, branch, `${flowId} #${i}`, len);
         const r = await rot('POST', '/api/add-urls', { flow_id: Number(flowId), urls: [url] });
         console.log(`[${flowId} #${i}] queued`, JSON.stringify(r));
         made++;
@@ -178,10 +191,10 @@ async function main() {
     if (due.length) {
       const queued = new Set(schedules.flatMap(x => x.urls).map(host));
       const sites = await listSites();
-      const done = [];
+      const done = [], kept = [];
       for (const t of due) {
         const h = host(t.url);
-        if (queued.has(h)) { console.log('Not deleting (back in a queue):', h); done.push(t.id); continue; }
+        if (queued.has(h)) { console.log('Not deleting (back in a queue):', h); kept.push(t.id); continue; }
         const site = sites.find(x => x.host === h);
         try {
           if (site) { await forge('DELETE', `/sites/${site.id}`); console.log('Deleted site', h); }
@@ -189,8 +202,8 @@ async function main() {
           done.push(t.id);
         } catch (e) { console.error('Could not delete', h, e.message); allOk = false; }
       }
-      if (done.length) await rot('POST', '/api/robot', { action: 'trash_done', ids: done });
-      await rot('POST', '/api/robot', { action: 'log', message: `Deleted ${done.length} used Forge site(s)` }).catch(() => {});
+      if (done.length || kept.length) await rot('POST', '/api/robot', { action: 'trash_done', ids: done, kept });
+      if (done.length) await rot('POST', '/api/robot', { action: 'log', message: `Deleted ${done.length} used Forge site(s)` }).catch(() => {});
     }
     return allOk;
   }
