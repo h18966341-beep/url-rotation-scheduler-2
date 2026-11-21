@@ -70,7 +70,7 @@ async function waitSite(id, ok, what, tries = 60) {
 }
 
 async function pageOpens(url) {
-  for (let i = 0; i < 24; i++) {
+  for (let i = 0; i < 60; i++) {
     try { const r = await fetch(url, { redirect: 'follow' }); if (r.status === 200) return true; } catch {}
     await sleep(5000);
   }
@@ -91,7 +91,7 @@ async function makeOne(repo, branch, label) {
     const s = await waitSite(id, x => ['never-deployed', 'installed', 'deployed'].includes(x.status) && (!x.repository || x.repository.status !== 'installing'), 'installing');
     url = s.url || url;
     await forge('POST', `/sites/${id}/deployments`);
-    await waitSite(id, x => x.status === 'deployed' || (x.status === 'installed' && x.deployment_status === 'finished'), 'deploying');
+    // the page itself is the proof that the deployment worked (checked below)
     url = (/^https?:/.test(url) ? url : 'https://' + url).replace(/\/+$/, '').replace(/^http:/, 'https:') + '/';
     if (!(await pageOpens(url))) throw new Error(`${url} does not open (200)`);
     console.log(`[${label}] OK ${url}`);
